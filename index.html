@@ -55,7 +55,7 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { height: 100%; }
+html, body { height: 100%; overscroll-behavior: none; }
 body {
   margin: 0;
   background: var(--bg);
@@ -541,6 +541,7 @@ kbd {
     G.state = s;
     app.dataset.state = s;
     btnPause.disabled = !(s === 'play' || s === 'pause');
+    tgClosingGuard(s === 'play' || s === 'pause' || s === 'clear');
   }
 
   /* ---------- board DOM ---------- */
@@ -656,6 +657,7 @@ kbd {
     G.score += (y - c.y) * 2;
     c.y = y;
     if (!reduceMotion) { frame.classList.remove('thud'); void frame.offsetWidth; frame.classList.add('thud'); }
+    haptic('impact', 'light');
     lockPiece();
   }
   function holdPiece() {
@@ -715,6 +717,7 @@ kbd {
     let msg = lineMessage(rows);
     if (level > G.level) { G.level = level; msg += ` · рівень ${level}`; }
     toast(msg, n >= 4);
+    haptic('notify', 'success');
   }
 
   function gameOver() {
@@ -724,6 +727,7 @@ kbd {
     if (record) { G.best = G.score; store.set(KEY_BEST + G.mode, G.best); }
     resetInput();
     showOverlay('over', { record });
+    haptic('notify', 'error');
   }
 
   /* ---------- game flow ---------- */
@@ -1076,6 +1080,52 @@ kbd {
   tickClock();
   setInterval(tickClock, 5000);
 
+  /* ---------- Telegram Mini App ---------- */
+  // The SDK loads only when the page is opened inside Telegram, so the game stays a plain page elsewhere.
+  let tg = null;
+  const tgAtLeast = (v) => !!(tg && tg.isVersionAtLeast && tg.isVersionAtLeast(v));
+  function haptic(kind, style) {
+    if (!tgAtLeast('6.1') || !tg.HapticFeedback) return;
+    try {
+      if (kind === 'impact') tg.HapticFeedback.impactOccurred(style);
+      else tg.HapticFeedback.notificationOccurred(style);
+    } catch { /* haptics unavailable */ }
+  }
+  function tgClosingGuard(on) {
+    if (!tgAtLeast('6.2')) return;
+    try { if (on) tg.enableClosingConfirmation(); else tg.disableClosingConfirmation(); } catch { /* ignore */ }
+  }
+  function tgApplyTheme() {
+    document.documentElement.dataset.theme = tg.colorScheme === 'dark' ? 'dark' : 'light';
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    try {
+      if (tgAtLeast('6.1')) tg.setBackgroundColor(bg);
+      if (tgAtLeast('6.9')) tg.setHeaderColor(bg);
+      if (tgAtLeast('7.10')) tg.setBottomBarColor(bg);
+    } catch { /* older clients */ }
+  }
+  function setupTelegram(w) {
+    tg = w;
+    app.classList.add('in-telegram');
+    tg.ready();
+    tg.expand();
+    if (tgAtLeast('7.7')) tg.disableVerticalSwipes();
+    tgApplyTheme();
+    tg.onEvent('themeChanged', tgApplyTheme);
+    tg.onEvent('viewportChanged', queueFit);
+    if (tgAtLeast('8.0')) tg.onEvent('deactivated', () => { resetInput(); pause(); });
+    tgClosingGuard(G.state === 'play' || G.state === 'pause' || G.state === 'clear');
+    queueFit();
+  }
+  function initTelegram() {
+    const inTelegram = /tgWebApp/.test(location.hash + location.search) || !!window.TelegramWebviewProxy;
+    if (!inTelegram) return;
+    const s = document.createElement('script');
+    s.src = 'https://telegram.org/js/telegram-web-app.js';
+    s.onload = () => { const w = window.Telegram && window.Telegram.WebApp; if (w) setupTelegram(w); };
+    document.head.appendChild(s);
+  }
+
   /* ---------- boot ---------- */
   const ro = new ResizeObserver(queueFit);
   ro.observe(stage);
@@ -1104,6 +1154,7 @@ kbd {
       bag: G.bag, next: G.next, score: G.score, lines: G.lines, level: G.level,
     } : {});
   }
+  initTelegram();
   if (hot && hot.ready) hot.ready(boot);
   else boot((hot && hot.data) || {});
 })();
